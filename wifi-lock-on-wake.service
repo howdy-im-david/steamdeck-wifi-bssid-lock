@@ -1,0 +1,9 @@
+[Unit]
+Description=Lock wifi to nearest AP after wake
+
+[Service]
+ExecStart=/home/deck/wifi-lock-on-wake.sh
+Restart=always
+
+[Install]
+WantedBy=default.target
