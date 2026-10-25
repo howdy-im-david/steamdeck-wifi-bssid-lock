@@ -90,3 +90,7 @@ nmcli con mod "<your wifi profile name>" 802-11-wireless.bssid ''
 ```
 
 Run the last command on the Deck itself. It clears any lock that was left in place.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
