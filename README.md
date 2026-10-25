@@ -16,7 +16,7 @@ A permanent lock has a downside: if you carry the Deck to another room, it stays
    - the strongest 6 GHz access point, if its signal is at least `MIN6` (default 55 on NetworkManager's 0-100 scale, roughly -72 dBm);
    - otherwise the strongest 5 GHz access point.
    - 2.4 GHz is never chosen.
-4. **Locks to it.** If the Deck is already connected to that node, it only sets the lock, with no reconnect and no dropped connection. Otherwise it reconnects once. If that reconnect fails within 15 seconds, it clears the lock so you are not left offline.
+4. **Locks to it and reconnects.** It sets the lock, then disconnects and reconnects wifi once, even if the Deck is already on that node. The reconnect is required: the BSSID is a saved NetworkManager setting that only reaches the wifi supplicant when a connection is brought up, so a lock set on an already-connected Deck does not stop its background scans. If the reconnect fails within 15 seconds, the script clears the lock so you are not left offline.
 
 Wake and sleep are detected through the `PrepareForSleep` signal from `systemd-logind` on D-Bus. Events are logged to `/tmp/wifi-lock.log`.
 
@@ -55,7 +55,7 @@ You should see lines like:
 ```
 going to sleep, clearing lock
 woke up
-locked '<profile>' to <BSSID> (already connected, no reconnect)
+locked '<profile>' to <BSSID> (was <previous BSSID>, reconnected)
 ```
 
 ## Try the ranking without sleeping

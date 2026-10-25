@@ -36,18 +36,15 @@ while read -r line; do
     CUR=$(iw dev "$CARD" link | awk '/Connected to/{print toupper($3)}')
     BEST=$(pick_bssid "$(nmcli -g 802-11-wireless.ssid con show "$CON")")
     if [ -n "$CARD" ] && [ -n "$CON" ] && [ -n "$BEST" ]; then
+      # The lock only reaches the supplicant on a (re)connect, so always reconnect, even if already on $BEST.
       nmcli con mod "$CON" 802-11-wireless.bssid "$BEST"
-      if [ "$BEST" = "$CUR" ]; then
-        log "locked '$CON' to $BEST (already connected, no reconnect)"
+      nmcli dev disconnect "$CARD"; sleep 1; nmcli dev connect "$CARD"
+      for i in $(seq 15); do [ -n "$(get_card)" ] && break; sleep 1; done
+      if [ -z "$(get_card)" ]; then
+        nmcli con mod "$CON" 802-11-wireless.bssid ''; nmcli dev connect "$CARD"
+        log "could not connect to $BEST, cleared lock"
       else
-        nmcli dev disconnect "$CARD"; sleep 2; nmcli dev connect "$CARD"
-        for i in $(seq 15); do [ -n "$(get_card)" ] && break; sleep 1; done
-        if [ -z "$(get_card)" ]; then
-          nmcli con mod "$CON" 802-11-wireless.bssid ''; nmcli dev connect "$CARD"
-          log "could not connect to $BEST, cleared lock"
-        else
-          log "locked '$CON' to $BEST (was $CUR, reconnected)"
-        fi
+        log "locked '$CON' to $BEST (was $CUR, reconnected)"
       fi
     else
       log "could not pick BSSID (cur=$CUR best=$BEST), not locking"
