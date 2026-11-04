@@ -1,24 +1,24 @@
 # steamdeck-wifi-bssid-lock
 
-A small background service for the Steam Deck (SteamOS) that locks wifi to the best nearby access point after the Deck wakes from sleep.
+A small background service for the Steam Deck (SteamOS) that locks wifi to the best nearby access point after the Deck wakes from sleep, starts up, or has its wifi switched back on.
 
 ## Why
 
 On a mesh network, the Deck periodically scans for better access points while connected. During Steam Remote Play, where the Deck is the streaming client, that scan shows up as a lag spike roughly every five minutes. Pinning the connection to one access point (a BSSID lock) stops the scanning.
 
-A permanent lock has a downside: if you carry the Deck to another room, it stays glued to the old node. So this service only locks while the Deck is awake. It clears the lock when the Deck goes to sleep and re-locks to the best node after each wake.
+A permanent lock has two downsides. If you carry the Deck to another room, it stays glued to the old node. And a lock saved in the wifi profile survives a reboot, so a Deck that starts up out of range of that node cannot connect at all, and SteamOS then asks for the wifi password again (creating a second profile with the same name). So this service only keeps the lock while it is useful: it clears it when the Deck sleeps or has wifi switched off, and re-locks to the best node when wifi is back.
 
 ## What it does
 
-1. **On sleep:** clears `802-11-wireless.bssid` on the active wifi profile, restoring normal roaming.
-2. **On wake:** waits for wifi to reconnect, clears the lock again, triggers a fresh scan, and waits 5 seconds.
+1. **On sleep, or when wifi is turned off:** clears `802-11-wireless.bssid` on every profile the script has locked, restoring normal roaming.
+2. **On wake, on service start (boot or login), or when wifi comes back:** clears the lock again, nudges NetworkManager to connect if nothing is connected, waits for wifi, triggers a fresh scan, and waits 5 seconds.
 3. **Picks a node** for the profile's SSID:
    - the strongest 6 GHz access point, if its signal is at least `MIN6` (default 55 on NetworkManager's 0-100 scale, roughly -72 dBm);
    - otherwise the strongest 5 GHz access point.
    - 2.4 GHz is never chosen.
 4. **Locks to it and reconnects.** It sets the lock, then disconnects and reconnects wifi once, even if the Deck is already on that node. The reconnect is required: the BSSID is a saved NetworkManager setting that only reaches the wifi supplicant when a connection is brought up, so a lock set on an already-connected Deck does not stop its background scans. If the reconnect fails within 15 seconds, the script clears the lock so you are not left offline.
 
-Wake and sleep are detected through the `PrepareForSleep` signal from `systemd-logind` on D-Bus. Events are logged to `/tmp/wifi-lock.log`.
+Sleep and wake are detected through the `PrepareForSleep` signal from `systemd-logind` on D-Bus. Wifi being switched off or on is detected from `nmcli monitor` (it watches for `<device>: unavailable` and `<device>: connected`). Profiles are addressed by UUID, not name, because SteamOS can end up with several profiles that share a name; the UUIDs the script has locked are remembered in `/home/deck/.wifi-lock.profiles` so a boot-time clear knows what to undo. Events are logged to `/tmp/wifi-lock.log`.
 
 ## Requirements
 
@@ -53,9 +53,11 @@ cat /tmp/wifi-lock.log
 You should see lines like:
 
 ```
+started, relocking (wifi device: wlan0)
+locked '<profile>' (<uuid>) to <BSSID> (was <previous BSSID>, reconnected)
 going to sleep, clearing lock
 woke up
-locked '<profile>' to <BSSID> (was <previous BSSID>, reconnected)
+wifi turned off, clearing lock
 ```
 
 ## Try the ranking without sleeping
@@ -78,18 +80,22 @@ Edit the top of the script:
 - **Permissions.** NetworkManager (via polkit) may refuse `nmcli con mod` and `nmcli dev wifi rescan` when run from an SSH session, with "Insufficient privileges" or "not authorized". The same commands work from the systemd user service. To test one by hand over SSH, wrap it in `systemd-run --user --wait nmcli ...`.
 - **Linger.** The service runs as a systemd user service. On a default SteamOS setup it starts with the `deck` user's session, including in Game Mode, after a reboot. If yours does not, you may need `loginctl enable-linger deck`.
 - **Log location.** `/tmp/wifi-lock.log` is cleared on reboot.
-- **The lock persists while awake.** If you move rooms without sleeping the Deck, it keeps the old node until the next sleep and wake.
+- **The lock persists while awake.** If you move rooms without sleeping the Deck, it keeps the old node until the next sleep, wake or wifi toggle. Switching wifi off and on in Game Mode relocks to the best node.
+- **Shutdown is best effort.** The unit runs `wifi-lock-on-wake.sh --clear` when the service stops, so the lock is cleared on shutdown and when you disable the service. That clear may be refused during shutdown, which is why the script also clears and relocks every time it starts.
+- **Duplicate profiles.** If SteamOS already created a second profile with the same name, the script only touches the active one and the ones it locked itself. You can delete a stale duplicate with `nmcli con delete uuid <uuid>` (find it with `nmcli -f NAME,UUID,TYPE con show`).
 - **SteamOS updates** can reset user changes, so re-check the service after a big update.
 
 ## Uninstall
 
+Stopping the service already clears the locks it set, so run the clear first to be sure, then remove everything:
+
 ```bash
+/home/deck/wifi-lock-on-wake.sh --clear
 systemctl --user disable --now wifi-lock-on-wake.service
-rm ~/.config/systemd/user/wifi-lock-on-wake.service /home/deck/wifi-lock-on-wake.sh
-nmcli con mod "<your wifi profile name>" 802-11-wireless.bssid ''
+rm ~/.config/systemd/user/wifi-lock-on-wake.service /home/deck/wifi-lock-on-wake.sh /home/deck/.wifi-lock.profiles
 ```
 
-Run the last command on the Deck itself. It clears any lock that was left in place.
+Run these on the Deck itself (over SSH, NetworkManager may refuse the clear; see the permissions note above).
 
 ## License
 
