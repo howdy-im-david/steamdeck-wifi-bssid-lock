@@ -10,13 +10,14 @@ A permanent lock has two downsides. If you carry the Deck to another room, it st
 
 ## What it does
 
-1. **On sleep, or when wifi is turned off:** clears `802-11-wireless.bssid` on every profile the script has locked, restoring normal roaming.
-2. **On wake, on service start (boot or login), or when wifi comes back:** clears the lock again, nudges NetworkManager to connect if nothing is connected, waits for wifi, triggers a fresh scan, and waits 5 seconds.
-3. **Picks a node** for the profile's SSID:
+1. **On sleep:** clears `802-11-wireless.bssid` on every profile the script has locked, restoring normal roaming, and turns autoconnect off on the active profile so NetworkManager does not connect by itself at wake. When wifi is turned off, it clears the lock too.
+2. **On wake:** NetworkManager has not connected yet, so the script rescans, picks the best node (see below), sets the lock, turns autoconnect back on, and connects once with the lock already applied. That avoids connecting unlocked and then reconnecting. If NetworkManager connected by itself anyway, or the scan or connect fails, it falls back to the on-start behaviour below.
+3. **On service start (boot or login), or when wifi comes back after being switched off:** clears the lock again, nudges NetworkManager to connect if nothing is connected, waits for wifi, triggers a fresh scan, waits 5 seconds, then locks and reconnects.
+4. **Picks a node** for the profile's SSID:
    - the strongest 6 GHz access point, if its signal is at least `MIN6` (default 55 on NetworkManager's 0-100 scale, roughly -72 dBm);
    - otherwise the strongest 5 GHz access point.
    - 2.4 GHz is never chosen.
-4. **Locks to it and reconnects.** It sets the lock, then disconnects and reconnects wifi once, even if the Deck is already on that node. The reconnect is required: the BSSID is a saved NetworkManager setting that only reaches the wifi supplicant when a connection is brought up, so a lock set on an already-connected Deck does not stop its background scans. If the reconnect fails within 15 seconds, the script clears the lock so you are not left offline.
+5. **Locks to it, on a fresh connection.** The lock must be in place when the connection is brought up: the BSSID is a saved NetworkManager setting that is only read at activation (`nmcli dev reapply` refuses to change it), so a lock set on an already-connected Deck does not stop its background scans. After wake the script gets that for free by connecting once itself; in the other paths it disconnects and reconnects once, even if the Deck is already on the chosen node. If the connect fails within 15 seconds, the script clears the lock so you are not left offline.
 
 Sleep and wake are detected through the `PrepareForSleep` signal from `systemd-logind` on D-Bus. Wifi being switched off or on is detected from `nmcli monitor` (it watches for `<device>: unavailable` and `<device>: connected`). Profiles are addressed by UUID, not name, because SteamOS can end up with several profiles that share a name; the UUIDs the script has locked are remembered in `/home/deck/.wifi-lock.profiles` so a boot-time clear knows what to undo. Events are logged to `/tmp/wifi-lock.log`.
 
@@ -55,10 +56,14 @@ You should see lines like:
 ```
 started, relocking (wifi device: wlan0)
 locked '<profile>' (<uuid>) to <BSSID> (was <previous BSSID>, reconnected)
-going to sleep, clearing lock
+going to sleep, clearing lock and pausing autoconnect
 woke up
+locked '<profile>' (<uuid>) to <BSSID> (connected once after wake)
+ignored stale unavailable event (device is connected)
 wifi turned off, clearing lock
 ```
+
+The "ignored stale unavailable event" line is normal after a wake: NetworkManager reports the device as unavailable during suspend, the event is processed late, and the script checks the device's real state before acting on it.
 
 ## Try the ranking without sleeping
 
@@ -82,6 +87,7 @@ Edit the top of the script:
 - **Log location.** `/tmp/wifi-lock.log` is cleared on reboot.
 - **The lock persists while awake.** If you move rooms without sleeping the Deck, it keeps the old node until the next sleep, wake or wifi toggle. Switching wifi off and on in Game Mode relocks to the best node.
 - **Shutdown is best effort.** The unit runs `wifi-lock-on-wake.sh --clear` when the service stops, so the lock is cleared on shutdown and when you disable the service. That clear may be refused during shutdown, which is why the script also clears and relocks every time it starts.
+- **Autoconnect is briefly off.** Between sleep and the post-wake connect, the active profile has `connection.autoconnect` set to `no`. The script switches it back on at wake, on every service start, and when the service stops. If the Deck ever loses power during sleep and boots with it off, the service turns it back on as soon as it starts; if the service cannot start, choose the network in Game Mode or run `nmcli con mod uuid <uuid> connection.autoconnect yes`.
 - **Duplicate profiles.** If SteamOS already created a second profile with the same name, the script only touches the active one and the ones it locked itself. You can delete a stale duplicate with `nmcli con delete uuid <uuid>` (find it with `nmcli -f NAME,UUID,TYPE con show`).
 - **SteamOS updates** can reset user changes, so re-check the service after a big update.
 
