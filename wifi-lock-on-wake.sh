@@ -10,9 +10,10 @@ log(){ echo "$(date '+%F %T') $*" >> "$LOG"; }
 
 # Profiles are addressed by UUID: SteamOS can create a second profile with the same name when you re-enter a password.
 get_uuid(){ nmcli -t -f UUID,TYPE con show --active | awk -F: '$2=="802-11-wireless"{print $1; exit}'; }
-ssid_of(){ nmcli -g 802-11-wireless.ssid con show uuid "$1"; }
-name_of(){ nmcli -g connection.id con show uuid "$1"; }
-lock_of(){ nmcli -g 802-11-wireless.bssid con show uuid "$1" | tr -d '\\'; }
+# These take a profile UUID and print nothing for an empty one (no active wifi connection yet, e.g. right after boot).
+ssid_of(){ [ -n "$1" ] && nmcli -g 802-11-wireless.ssid con show uuid "$1"; }
+name_of(){ [ -n "$1" ] && nmcli -g connection.id con show uuid "$1"; }
+lock_of(){ [ -n "$1" ] && nmcli -g 802-11-wireless.bssid con show uuid "$1" | tr -d '\\'; }
 find_wifi(){ nmcli -t -f DEVICE,TYPE dev | awk -F: '$2=="wifi"{print $1; exit}'; }
 dev_state(){ nmcli -t -f DEVICE,STATE dev | awk -F: -v d="$WIFI" '$1==d{print $2}'; }
 connected(){ [ "$(dev_state)" = connected ]; }
