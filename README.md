@@ -21,7 +21,7 @@ So this service keeps a lock only on networks you list, only while it is useful:
 | Event | What happens |
 |---|---|
 | **Sleep** | Clears the lock and turns autoconnect off on the active profile (one `nmcli` call, so it lands before suspend), so NetworkManager does not connect by itself at wake. |
-| **Wake** | Waits for the radio, scans until the network shows up (at most about 8 seconds), picks the best node, sets the lock, turns autoconnect back on and connects once with the lock already applied. If NetworkManager connected by itself anyway, or the scan or connect fails, it falls back to the lock-then-reconnect path used at startup. |
+| **Wake** | Waits for the radio, uses recent scan results if they contain the network (otherwise it does one new scan, about 6 seconds for a full scan including 6 GHz), picks the best node, sets the lock, turns autoconnect back on and connects once with the lock already applied. If NetworkManager connected by itself anyway, or the scan or connect fails, it falls back to the lock-then-reconnect path used at startup. |
 | **Service start** (boot or login) | Clears locks, waits for wifi, scans, locks to the best node and reconnects once. |
 | **Wifi switched off, then on** | Clears the lock when it goes off. When wifi connects again, it locks and reconnects once. Switching wifi off and on is also your manual escape hatch if a lock ever misbehaves; NetworkManager reconnects by itself, without waiting for this script. |
 | **Shutdown or reboot** | Clears the lock while NetworkManager and polkit still exist, so the next boot cannot start on a stale lock. |
@@ -108,7 +108,7 @@ Edit the top of the script:
 - **Log location.** `/tmp/wifi-lock.log` is cleared on reboot.
 - **The lock stays while awake.** If you move rooms without sleeping the Deck, it keeps the old node until the next sleep, wake or wifi toggle.
 - **Hard resets.** A forced power-off sends no shutdown signal, so the lock is not cleared then. The service clears it at the next start, but if the old node is out of range, the Deck may fail to connect in the gap before the service runs, and SteamOS may ask for the wifi password.
-- **Away from home.** If you sleep the Deck on a listed network and wake it somewhere else, the script looks for the listed network for up to about 8 seconds before letting NetworkManager connect normally. Networks that are not listed are left alone.
+- **Away from home.** If you sleep the Deck on a listed network and wake it somewhere else, the script does one scan (about 6 seconds) looking for the listed network before letting NetworkManager connect normally. Networks that are not listed are left alone.
 - **Autoconnect is briefly off.** Between sleep and the post-wake connect, the active profile has `connection.autoconnect` set to `no`. The script switches it back on at wake, on every service start, and when the service stops. If the Deck ever loses power during sleep and boots with it off, the service turns it back on as soon as it starts; if the service cannot start, choose the network in Game Mode or run `nmcli con mod uuid <uuid> connection.autoconnect yes`.
 - **Duplicate profiles.** If SteamOS already created a second profile with the same name, the script only touches the active one and the ones it locked itself. You can delete a stale duplicate with `nmcli con delete uuid <uuid>` (find it with `nmcli -f NAME,UUID,TYPE con show`).
 - **SteamOS updates** can reset user changes, so re-check the service after a big update.

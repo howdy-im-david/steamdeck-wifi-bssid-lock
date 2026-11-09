@@ -27,17 +27,21 @@ wait_connected(){ local i; for i in $(seq $(( $1 * 5 ))); do connected && return
 # Poll for up to $1 seconds until NetworkManager has finished waking the radio (disconnected, or connected by itself).
 wait_ready(){ local i s; for i in $(seq $(( $1 * 5 ))); do s=$(dev_state); [ "$s" = disconnected ] || [ "$s" = connected ] && return 0; sleep 0.2; done; return 1; }
 
-# Make sure scan results are no older than $1 seconds; if they are, rescan and wait up to $2 seconds for it to finish.
 # NetworkManager's LastScan (ms on the boot clock) only changes when a scan completes, and a full scan including 6 GHz takes ~6 s.
-fresh_scan(){
+dev_path(){ busctl --system call $NM /org/freedesktop/NetworkManager $NM GetDeviceByIpIface s "$WIFI" 2>/dev/null | awk '{gsub(/"/,"",$2); print $2}'; }
+last_scan(){ busctl --system get-property $NM "$1" $NM.Device.Wireless LastScan 2>/dev/null | awk '{print $2}'; }
+# Were the scan results produced in the last $1 seconds?
+scan_recent(){
+  local t; t=$(last_scan "$(dev_path)")
+  [ -n "$t" ] && [ $(( $(awk '{printf "%d", $1*1000}' /proc/uptime) - t )) -lt $(( $1 * 1000 )) ]
+}
+# Force a scan and wait up to $1 seconds for it to finish.
+rescan_wait(){
   local p before i
-  p=$(busctl --system call $NM /org/freedesktop/NetworkManager $NM GetDeviceByIpIface s "$WIFI" 2>/dev/null | awk '{gsub(/"/,"",$2); print $2}')
-  last_scan(){ busctl --system get-property $NM "$p" $NM.Device.Wireless LastScan 2>/dev/null | awk '{print $2}'; }
-  before=$(last_scan)
-  if [ -z "$before" ]; then nmcli dev wifi rescan >/dev/null 2>&1; sleep 6; return; fi   # LastScan unreadable: fixed wait
-  [ $(( $(awk '{printf "%d", $1*1000}' /proc/uptime) - before )) -lt $(( $1 * 1000 )) ] && return 0
+  p=$(dev_path); before=$(last_scan "$p")
   nmcli dev wifi rescan >/dev/null 2>&1
-  for i in $(seq $(( $2 * 5 ))); do [ "$(last_scan)" != "$before" ] && return 0; sleep 0.2; done
+  [ -z "$before" ] && { sleep 6; return; }   # LastScan unreadable: fixed wait
+  for i in $(seq $(( $1 * 5 ))); do [ "$(last_scan "$p")" != "$before" ] && return 0; sleep 0.2; done
   return 1
 }
 
@@ -63,17 +67,13 @@ lock_and_connect(){
   return 1
 }
 
-# Scan until the SSID shows up, for at most $2 seconds. Results can look fresh yet be empty right after resume, so if the
-# first look finds nothing, force a new scan and wait for it to finish.
+# Best BSSID for SSID $1: from recent scan results if they contain it, otherwise from exactly one new scan. Results can look
+# recent yet be empty right after resume, so recent results alone are not enough.
 pick_fresh(){
-  local end=$(( SECONDS + $2 )) age=15 best
-  while :; do
-    fresh_scan $age 8
-    best=$(pick_bssid "$1")
-    [ -n "$best" ] && { echo "$best"; return 0; }
-    [ $SECONDS -ge $end ] && return 1
-    age=0
-  done
+  local best
+  if scan_recent 15; then best=$(pick_bssid "$1"); [ -n "$best" ] && { echo "$best"; return 0; }; fi
+  rescan_wait 8
+  best=$(pick_bssid "$1"); echo "$best"; [ -n "$best" ]
 }
 
 # Lock the active connection to the best AP, reconnecting once. Used when NetworkManager has already connected by itself.
@@ -82,7 +82,7 @@ relock(){
   u=$(get_uuid)
   allowed "$u" || { log "'$(name_of "$u")' is not an allowed network, leaving it alone"; return; }
   cur=$(iw dev "$WIFI" link | awk '/Connected to/{print toupper($3)}')
-  best=$(pick_fresh "$(ssid_of "$u")" 8)
+  best=$(pick_fresh "$(ssid_of "$u")")
   if [ -z "$best" ]; then log "could not pick a BSSID (uuid=$u), not locking"; return; fi
   track_uuid "$u"
   if lock_and_connect "$u" "$best"; then log "locked '$(name_of "$u")' ($u) to $best (was $cur, reconnected)"
@@ -108,7 +108,7 @@ wake_connect(){
   local t0=$EPOCHREALTIME u=$SLEEP_UUID best
   wait_ready 10
   if [ -z "$u" ] || connected; then autoconnect_on; maybe_relock; return; fi
-  best=$(pick_fresh "$(ssid_of "$u")" 8)
+  best=$(pick_fresh "$(ssid_of "$u")")
   if [ -n "$best" ] && lock_and_connect "$u" "$best"; then
     PENDING=0
     log "locked '$(name_of "$u")' ($u) to $best (connected once after wake, $(( (${EPOCHREALTIME/[.,]/} - ${t0/[.,]/}) / 1000 )) ms)"
