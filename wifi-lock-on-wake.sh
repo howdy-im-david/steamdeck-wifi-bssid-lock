@@ -68,13 +68,18 @@ lock_and_connect(){
   return 1
 }
 
-# Best BSSID for SSID $1: from recent scan results if they contain it, otherwise from exactly one new scan. Results can look
-# recent yet be empty right after resume, so recent results alone are not enough.
+# Best BSSID for SSID $1: from recent scan results if they contain it, otherwise from a new scan. Right after resume the radio is
+# not ready and a scan can "finish" at once with an empty list, so an empty list means wait for the next scan (up to ~10 s),
+# while a list of other networks means ours is not here and we stop after that one scan.
 pick_fresh(){
-  local best
+  local best end=$(( SECONDS + 10 ))
   if scan_recent 15; then best=$(pick_bssid "$1"); [ -n "$best" ] && { echo "$best"; return 0; }; fi
-  rescan_wait 8
-  best=$(pick_bssid "$1"); echo "$best"; [ -n "$best" ]
+  while :; do
+    rescan_wait 8
+    best=$(pick_bssid "$1"); [ -n "$best" ] && { echo "$best"; return 0; }
+    [ -n "$(nmcli -t -f BSSID dev wifi list)" ] && return 1
+    [ $SECONDS -ge $end ] && return 1
+  done
 }
 
 # Lock the active connection to the best AP, reconnecting once. Used when NetworkManager has already connected by itself.
@@ -87,7 +92,7 @@ relock(){
   if [ -z "$best" ]; then log "could not pick a BSSID (uuid=$u), not locking"; return; fi
   track_uuid "$u"
   if lock_and_connect "$u" "$best"; then log "locked '$(name_of "$u")' ($u) to $best (was $cur, reconnected)"
-  else log "could not connect to $best, cleared lock"; nmcli -w 15 dev connect "$WIFI" >/dev/null 2>&1; fi
+  else log "could not connect to $best, cleared lock"; nmcli -w 15 con up uuid "$u" ifname "$WIFI" >/dev/null 2>&1; fi
 }
 
 # Relock once wifi is up, but only when a sleep, wifi toggle or startup left the lock cleared.
@@ -96,7 +101,9 @@ SLEEP_UUID=""
 maybe_relock(){
   [ "$PENDING" = 1 ] || return
   clear_lock
-  connected || nmcli -w 15 dev connect "$WIFI" >/dev/null 2>&1
+  # Nudge NetworkManager with an explicit known profile; `dev connect` can try to create a new connection when no AP is visible.
+  local u=${SLEEP_UUID:-$(profiles | head -1)}
+  connected || { [ -n "$u" ] && nmcli -w 15 con up uuid "$u" ifname "$WIFI" >/dev/null 2>&1; }
   if ! wait_connected 45; then log "no wifi after 60s, will retry when it connects"; return; fi
   PENDING=0
   relock
