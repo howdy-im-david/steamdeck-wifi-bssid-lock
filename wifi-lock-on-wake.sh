@@ -31,11 +31,9 @@ wait_ready(){ local i s; for i in $(seq $(( $1 * 5 ))); do s=$(dev_state); [ "$s
 # NetworkManager's LastScan (ms on the boot clock) only changes when a scan completes, and a full scan including 6 GHz takes ~6 s.
 dev_path(){ busctl --system call $NM /org/freedesktop/NetworkManager $NM GetDeviceByIpIface s "$WIFI" 2>/dev/null | awk '{gsub(/"/,"",$2); print $2}'; }
 last_scan(){ busctl --system get-property $NM "$1" $NM.Device.Wireless LastScan 2>/dev/null | awk '{print $2}'; }
-# Were the scan results produced in the last $1 seconds?
-scan_recent(){
-  local t; t=$(last_scan "$(dev_path)")
-  [ -n "$t" ] && [ $(( $(awk '{printf "%d", $1*1000}' /proc/uptime) - t )) -lt $(( $1 * 1000 )) ]
-}
+boot_ms(){ awk '{printf "%d", $1*1000}' /proc/uptime; }
+# Did the last scan finish at or after boot-clock time $1 (ms)?
+scan_since(){ local t; t=$(last_scan "$(dev_path)"); [ -n "$t" ] && [ "$t" -ge "$1" ]; }
 # Force a scan and wait up to $1 seconds for it to finish.
 rescan_wait(){
   local p before i
@@ -62,10 +60,16 @@ autoconnect_on(){ local u; for u in $(profiles) $SLEEP_UUID; do nmcli con mod uu
 # Lock profile $1 to BSSID $2 and bring it up. The lock is only read when a connection is activated (nmcli dev reapply refuses
 # to change it), and `nmcli con up` re-activates even an already-connected profile. On failure the lock is cleared again.
 lock_and_connect(){
-  nmcli con mod uuid "$1" 802-11-wireless.bssid "$2" connection.autoconnect yes
-  nmcli -w 15 con up uuid "$1" ifname "$WIFI" >/dev/null 2>&1 && connected && return 0
+  # Autoconnect is switched on only after the connect: setting it first makes NetworkManager start its own activation in parallel.
+  nmcli con mod uuid "$1" 802-11-wireless.bssid "$2"
+  nmcli -w 15 con up uuid "$1" ifname "$WIFI" >/dev/null 2>&1 && connected && { nmcli con mod uuid "$1" connection.autoconnect yes; return 0; }
   nmcli con mod uuid "$1" 802-11-wireless.bssid ''
   return 1
+}
+
+# Log what the pick was chosen from (BSSID freq signal), so a bad pick can be diagnosed afterwards.
+log_cands(){
+  log "picked $2 from: $(nmcli -t -f BSSID,SSID,FREQ,SIGNAL dev wifi list | sed 's/\\:/-/g' | awk -F: -v s="$1" '$2==s{printf "%s%s/%s", sep, $1, $3+0 "/" $4; sep=" "}' | sed 's/-/:/g')"
 }
 
 # Best BSSID for SSID $1: from recent scan results if they contain it, otherwise from a new scan. Right after resume the radio is
@@ -73,10 +77,12 @@ lock_and_connect(){
 # while a list of other networks means ours is not here and we stop after that one scan.
 pick_fresh(){
   local best end=$(( SECONDS + 10 ))
-  if scan_recent 15; then best=$(pick_bssid "$1"); [ -n "$best" ] && { echo "$best"; return 0; }; fi
+  # Results are only trusted if the scan finished after SCAN_SINCE (the wake event after a sleep, otherwise the last 15 s): after
+  # resume the list can still hold the previous room's access points.
+  if scan_since "${SCAN_SINCE:-$(( $(boot_ms) - 15000 ))}"; then best=$(pick_bssid "$1"); [ -n "$best" ] && { log_cands "$1" "$best"; echo "$best"; return 0; }; fi
   while :; do
     rescan_wait 8
-    best=$(pick_bssid "$1"); [ -n "$best" ] && { echo "$best"; return 0; }
+    best=$(pick_bssid "$1"); [ -n "$best" ] && { log_cands "$1" "$best"; echo "$best"; return 0; }
     [ -n "$(nmcli -t -f BSSID dev wifi list)" ] && return 1
     [ $SECONDS -ge $end ] && return 1
   done
@@ -114,6 +120,7 @@ maybe_relock(){
 wake_connect(){
   [ "$PENDING" = 1 ] || return
   local t0=$EPOCHREALTIME u=$SLEEP_UUID best
+  SCAN_SINCE=$(( $(boot_ms) - 1500 ))   # a scan that finished since the wake event counts; allow for the event arriving late
   wait_ready 10
   if [ -z "$u" ] || connected; then autoconnect_on; maybe_relock; return; fi
   best=$(pick_fresh "$(ssid_of "$u")")
@@ -159,7 +166,7 @@ while read -r src line; do
       esac ;;
     DBUS:*"boolean false"*)
       case $SIG in
-        sleep)    log "woke up"; wake_connect ;;
+        sleep)    log "woke up"; wake_connect; SCAN_SINCE="" ;;
         shutdown) PENDING=1; log "shutdown cancelled"; maybe_relock ;;
       esac ;;
     "NM:$WIFI: unavailable"*)
