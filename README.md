@@ -21,7 +21,7 @@ So this service keeps a lock only on networks you list, only while it is useful:
 | Event | What happens |
 |---|---|
 | **Sleep** | Clears the lock and turns autoconnect off on the active profile (one `nmcli` call, so it lands before suspend), so NetworkManager does not connect by itself at wake. |
-| **Wake** | Waits for the radio, uses scan results only if the scan finished after the wake event (results left over from before the sleep can still list the previous room's access points), otherwise it does a new scan ( about 6 seconds for a full scan including 6 GHz; if the scan list is completely empty, the radio is not ready yet right after resume, so it waits for the next scan, for up to about 10 seconds), picks the best node, sets the lock, turns autoconnect back on and connects once with the lock already applied. If NetworkManager connected by itself anyway, or the scan or connect fails, it falls back to the lock-then-reconnect path used at startup. |
+| **Wake** | Waits for the radio, uses scan results only if the scan finished after the wake event (results left over from before the sleep can still list the previous room's access points), otherwise it does a new scan ( about 6 seconds for a full scan including 6 GHz; if the scan list is completely empty, the radio is not ready yet right after resume, so it waits for the next scan, for up to about 10 seconds), picks the best node, sets the lock, turns autoconnect back on and connects once with the lock already applied. The first scan after resume can be incomplete (a few access points, or none on 6 GHz), so once connected it scans again and relocks if the locked node is gone, on a different band than the new best, or at least 10 weaker. Normally this changes nothing and costs no extra reconnect. If NetworkManager connected by itself anyway, or the scan or connect fails, it falls back to the lock-then-reconnect path used at startup. |
 | **Service start** (boot or login) | Clears locks, waits for wifi, scans, locks to the best node and reconnects once. |
 | **Wifi switched off, then on** | Clears the lock when it goes off. When wifi connects again, it locks and reconnects once. Switching wifi off and on is also your manual escape hatch if a lock ever misbehaves; NetworkManager reconnects by itself, without waiting for this script. |
 | **Shutdown or reboot** | Clears the lock while NetworkManager and polkit still exist, so the next boot cannot start on a stale lock. |
@@ -83,6 +83,7 @@ locked '<profile>' (<uuid>) to <BSSID> (was <previous BSSID>, reconnected)
 going to sleep, lock cleared and autoconnect paused
 woke up
 locked '<profile>' (<uuid>) to <BSSID> (connected once after wake, 1480 ms)
+corrected lock to <BSSID> (wake pick <BSSID> came from an incomplete scan)
 ignored stale unavailable event (device is connected)
 ```
 

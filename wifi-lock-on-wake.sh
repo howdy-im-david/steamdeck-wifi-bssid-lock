@@ -115,6 +115,26 @@ maybe_relock(){
   relock
 }
 
+# "freq signal" of BSSID $1 in the current scan list (nothing if it is not there).
+ap_info(){
+  nmcli -t -f BSSID,FREQ,SIGNAL dev wifi list | sed 's/\\:/-/g' |
+  awk -F: -v b="$(echo "$1" | tr ':' '-')" '$1==b{print $2+0, $3+0; exit}'
+}
+
+# The first scan after resume can be incomplete (a few APs, or no 6 GHz), so the wake pick can be wrong. Once connected, scan again
+# and relock if the locked AP is gone, is on a different band than the new best, or is 10+ weaker. Normally this changes nothing.
+verify_lock(){
+  local ssid best cur new cf cs nf ns
+  ssid=$(ssid_of "$1")
+  rescan_wait 10
+  best=$(pick_bssid "$ssid"); [ -n "$best" ] && [ "$best" != "$2" ] || return 0
+  read -r cf cs <<< "$(ap_info "$2")"; read -r nf ns <<< "$(ap_info "$best")"
+  if [ -n "$cf" ] && [ $(( cf >= 5925 )) = $(( nf >= 5925 )) ] && [ $(( ns - cs )) -lt 10 ]; then return 0; fi
+  log_cands "$ssid" "$best"
+  if lock_and_connect "$1" "$best"; then log "corrected lock to $best (wake pick $2 came from an incomplete scan)"
+  else log "could not correct lock to $best, cleared lock"; nmcli -w 15 con up uuid "$1" ifname "$WIFI" >/dev/null 2>&1; fi
+}
+
 # At wake autoconnect is off, so NetworkManager has not connected yet: pick the AP first, then connect once with the lock set.
 # If NetworkManager connected on its own anyway, or anything fails, fall back to maybe_relock (lock, then reconnect).
 wake_connect(){
@@ -127,6 +147,7 @@ wake_connect(){
   if [ -n "$best" ] && lock_and_connect "$u" "$best"; then
     PENDING=0
     log "locked '$(name_of "$u")' ($u) to $best (connected once after wake, $(( (${EPOCHREALTIME/[.,]/} - ${t0/[.,]/}) / 1000 )) ms)"
+    verify_lock "$u" "$best"
     return
   fi
   log "wake connect failed (best=${best:-none}), falling back"
